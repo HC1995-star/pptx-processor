@@ -56,7 +56,16 @@ def process_pptx():
                 if qbr.get("Total Opportunities Identified") else "",
         }
         
-        # IMPORTANT: Automatically add ALL other fields from qbr_data as placeholders
+        # NEW: Add default values for table placeholders (pointing to notes)
+        replacements.update({
+            "{{yoy_summary_table}}": "→ See detailed YoY summary table in presentation notes",
+            "{{top_10_growth_table}}": "→ See top 10 growth publishers in presentation notes",
+            "{{top_10_decline_table}}": "→ See top 10 declining publishers in presentation notes",
+            "{{top_current_performers_table}}": "→ See top current performers in presentation notes",
+            "{{search_visibility_table}}": "→ See visibility opportunities in presentation notes"
+        })
+        
+        # Automatically add ALL other fields from qbr_data as placeholders
         # This handles all the AI-extracted fields like exec_point_1, insight_1, etc.
         for key, value in qbr.items():
             placeholder = f"{{{{{key}}}}}"
