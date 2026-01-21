@@ -28,6 +28,7 @@ def process_pptx():
         else:
             full_date = s(qbr.get("Report Date") or qbr.get("Report Time") or "")
         
+        # Start with manual mappings for fields that need custom formatting
         replacements = {
             "{{brand_name}}": s(qbr.get("Client") or qbr.get("clientName") or ""),
             "{{period}}": s(qbr.get("Period") or qbr.get("period") or ""),
@@ -55,43 +56,37 @@ def process_pptx():
                 if qbr.get("Total Opportunities Identified") else "",
         }
         
+        # IMPORTANT: Automatically add ALL other fields from qbr_data as placeholders
+        # This handles all the AI-extracted fields like exec_point_1, insight_1, etc.
+        for key, value in qbr.items():
+            placeholder = f"{{{{{key}}}}}"
+            # Only add if not already in replacements (don't override manual mappings)
+            if placeholder not in replacements:
+                replacements[placeholder] = s(value)
+        
         def replace_in_shape(shape):
-            try:
-                # Handle text frames
-                if hasattr(shape, "text_frame") and shape.text_frame is not None:
-                    for paragraph in shape.text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            if run.text:
-                                for key, value in replacements.items():
-                                    if key in run.text:
-                                        run.text = run.text.replace(key, value)
-                
-                # Handle tables
-                if hasattr(shape, "table") and shape.table is not None:
-                    for row in shape.table.rows:
-                        for cell in row.cells:
-                            if hasattr(cell, "text_frame") and cell.text_frame is not None:
-                                for paragraph in cell.text_frame.paragraphs:
-                                    for run in paragraph.runs:
-                                        if run.text:
-                                            for key, value in replacements.items():
-                                                if key in run.text:
-                                                    run.text = run.text.replace(key, value)
-                
-                # Handle group shapes
-                if hasattr(shape, "shapes") and shape.shapes is not None:
-                    for sub_shape in shape.shapes:
-                        replace_in_shape(sub_shape)
-                        
-            except Exception as e:
-                # Skip problematic shapes
-                pass
+            if hasattr(shape, "text_frame"):
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        for key, value in replacements.items():
+                            if key in run.text:
+                                run.text = run.text.replace(key, value)
+            
+            if hasattr(shape, "table"):
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        for key, value in replacements.items():
+                            if key in cell.text:
+                                cell.text = cell.text.replace(key, value)
+            
+            if hasattr(shape, "shapes"):
+                for sub_shape in shape.shapes:
+                    replace_in_shape(sub_shape)
         
         for slide in prs.slides:
             for shape in slide.shapes:
                 replace_in_shape(shape)
         
-        # Add notes
         notes_parts = []
         if qbr.get("Complete QBR Report"):
             notes_parts.append(f"=== Complete QBR Report ===\n{qbr['Complete QBR Report']}")
@@ -103,24 +98,17 @@ def process_pptx():
             notes_parts.append(f"=== Visibility Analysis ===\n{qbr['Visibility Analysis (Full Text)']}")
         
         if notes_parts and len(prs.slides) > 0:
-            try:
-                prs.slides[-1].notes_slide.notes_text_frame.text = "\n\n".join(notes_parts)
-            except:
-                pass  # Skip if notes can't be added
+            prs.slides[-1].notes_slide.notes_text_frame.text = "\n\n".join(notes_parts)
         
-        # Save and return
         output = BytesIO()
         prs.save(output)
         output.seek(0)
         result_b64 = base64.b64encode(output.read()).decode('utf-8')
         
-        client_name = s(qbr.get('clientName') or qbr.get('Client') or 'Client').replace(' ', '_')
-        period = s(qbr.get('period') or qbr.get('Period') or 'Period').replace(' ', '_')
-        
         return jsonify({
             "success": True,
             "binary": result_b64,
-            "filename": f"QBR-{client_name}-{period}.pptx"
+            "filename": f"QBR-{s(qbr.get('clientName') or qbr.get('Client') or 'Client')}-{s(qbr.get('period') or qbr.get('Period') or 'Period')}.pptx"
         })
         
     except Exception as e:
