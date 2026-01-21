@@ -1,127 +1,183 @@
 from flask import Flask, request, jsonify
-import base64
 from pptx import Presentation
-from io import BytesIO
+import base64
+import io
+import re
+from datetime import datetime
 
 app = Flask(__name__)
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({"status": "ok"})
+def replace_placeholder_text(text_frame, replacements):
+    """Replace {{placeholder}} text in a text frame with actual values"""
+    if not text_frame or not text_frame.text:
+        return
+    
+    # Get current text
+    current_text = text_frame.text
+    
+    # Replace all {{variable}} patterns
+    for key, value in replacements.items():
+        pattern = '{{' + key + '}}'
+        if pattern in current_text:
+            current_text = current_text.replace(pattern, str(value))
+    
+    # Clear existing paragraphs and set new text
+    text_frame.clear()
+    text_frame.text = current_text
+
+def process_shape(shape, replacements):
+    """Process a single shape and replace placeholders"""
+    if not hasattr(shape, 'text_frame'):
+        return
+    
+    try:
+        replace_placeholder_text(shape.text_frame, replacements)
+    except Exception as e:
+        print(f"Error processing shape {shape.name}: {str(e)}")
 
 @app.route('/process-pptx', methods=['POST'])
 def process_pptx():
     try:
         data = request.json
-        pptx_b64 = data.get('pptx_binary')
-        qbr = data.get('qbr_data', {})
         
-        pptx_bytes = base64.b64decode(pptx_b64)
-        prs = Presentation(BytesIO(pptx_bytes))
+        # Extract binary and QBR data
+        pptx_binary = data.get('pptx_binary')
+        qbr_data = data.get('qbr_data', {})
         
-        def s(x):
-            return "" if x is None else str(x)
+        if not pptx_binary:
+            return jsonify({'success': False, 'error': 'No PPTX binary provided'}), 400
         
-        full_date = ""
-        if qbr.get("Report Date") and qbr.get("Report Time"):
-            full_date = f"{qbr.get('Report Date')} {qbr.get('Report Time')}"
-        else:
-            full_date = s(qbr.get("Report Date") or qbr.get("Report Time") or "")
+        # Decode base64 PPTX
+        pptx_bytes = base64.b64decode(pptx_binary)
+        pptx_file = io.BytesIO(pptx_bytes)
         
-        # Start with manual mappings for fields that need custom formatting
+        # Load presentation
+        prs = Presentation(pptx_file)
+        
+        # Prepare replacements dictionary with all possible fields
         replacements = {
-            "{{brand_name}}": s(qbr.get("Client") or qbr.get("clientName") or ""),
-            "{{period}}": s(qbr.get("Period") or qbr.get("period") or ""),
-            "{{date}}": full_date,
-            "{{prepared_by}}": s(qbr.get("preparedBy") or ""),
-            "{{market}}": s(qbr.get("market") or ""),
-            "{{clicks_recent}}": s(qbr.get("Current Clicks") or ""),
-            "{{sales_recent}}": s(qbr.get("Current Sales") or ""),
-            "{{cvr_recent}}": s(qbr.get("Current Conv Rate") or ""),
-            "{{order_value_recent}}": s(qbr.get("Current Order Value") or ""),
-            "{{aov_recent}}": s(qbr.get("Current AOV") or ""),
-            "{{total_commission_recent}}": s(qbr.get("Current Commission") or ""),
-            "{{roi_recent}}": s(qbr.get("Current ROI") or ""),
-            "{{clicks_yoy_pct}}": s(qbr.get("YoY Clicks Change") or ""),
-            "{{sales_yoy_pct}}": s(qbr.get("YoY Sales Change") or ""),
-            "{{cvr_yoy_pct}}": s(qbr.get("YoY Conv Rate Change") or ""),
-            "{{order_value_yoy_pct}}": s(qbr.get("YoY Order Value Change") or ""),
-            "{{growth_driver_1}}": f"{s(qbr.get('Top Growth Publisher'))}: {s(qbr.get('Top Growth Amount'))} ({s(qbr.get('Top Growth YoY %'))})" 
-                if (qbr.get("Top Growth Publisher") or qbr.get("Top Growth Amount")) else "",
-            "{{decline_1}}": f"{s(qbr.get('Top Decline Publisher'))}: {s(qbr.get('Top Decline Amount'))} ({s(qbr.get('Top Decline YoY %'))})" 
-                if (qbr.get("Top Decline Publisher") or qbr.get("Top Decline Amount")) else "",
-            "{{opp_1}}": f"{s(qbr.get('Top Opportunity Domain'))} (Pos {s(qbr.get('Top Opportunity Position'))}, Score {s(qbr.get('Top Opportunity Score'))})" 
-                if qbr.get("Top Opportunity Domain") else "",
-            "{{supporting_note_or_context}}": f"Total opportunities identified: {s(qbr.get('Total Opportunities Identified'))}" 
-                if qbr.get("Total Opportunities Identified") else "",
+            # Config/basic info
+            'period': qbr_data.get('period', ''),
+            'prepared_by': qbr_data.get('preparedBy', qbr_data.get('prepared_by', '')),
+            'date': datetime.now().strftime('%B %d, %Y'),
+            'brand_name': qbr_data.get('clientName', qbr_data.get('brand_name', '')),
+            'optional_page_refs': '',
+            
+            # Executive summary & insights
+            'exec_summary_full': qbr_data.get('exec_summary_full', ''),
+            'insight_biggest_movers': qbr_data.get('insight_biggest_movers', ''),
+            'insight_below_benchmark': qbr_data.get('insight_below_benchmark', ''),
+            'insight_efficiency_changes': qbr_data.get('insight_efficiency_changes', ''),
+            'insight_roi_improvement': qbr_data.get('insight_roi_improvement', ''),
+            
+            # Analysis paragraphs
+            'traffic_trends': qbr_data.get('traffic_trends', ''),
+            'conversion_performance': qbr_data.get('conversion_performance', ''),
+            'revenue_economics': qbr_data.get('revenue_economics', ''),
+            
+            # Program recommendations
+            'rec_1': qbr_data.get('rec_1', ''),
+            'rec_2': qbr_data.get('rec_2', ''),
+            'rec_3': qbr_data.get('rec_3', ''),
+            'rec_4': qbr_data.get('rec_4', ''),
+            'rec_5': qbr_data.get('rec_5', ''),
+            
+            # Publisher performance
+            'growth_drivers_paragraph': qbr_data.get('growth_drivers_paragraph', ''),
+            'new_partners_paragraph': qbr_data.get('new_partners_paragraph', ''),
+            'declines_paragraph': qbr_data.get('declines_paragraph', ''),
+            'top_performers_paragraph': qbr_data.get('top_performers_paragraph', ''),
+            'segment_insights_paragraph': qbr_data.get('segment_insights_paragraph', ''),
+            
+            # Publisher recommendations
+            'pub_rec_1': qbr_data.get('pub_rec_1', ''),
+            'pub_rec_2': qbr_data.get('pub_rec_2', ''),
+            'pub_rec_3': qbr_data.get('pub_rec_3', ''),
+            'pub_rec_4': qbr_data.get('pub_rec_4', ''),
+            'pub_rec_5': qbr_data.get('pub_rec_5', ''),
+            
+            # Visibility analysis
+            'brand_snapshot': qbr_data.get('brand_snapshot', ''),
+            'evergreen_content': qbr_data.get('evergreen_content', ''),
+            'fresh_content': qbr_data.get('fresh_content', ''),
+            'discount_behavior': qbr_data.get('discount_behavior', ''),
+            'category_discovery': qbr_data.get('category_discovery', ''),
+            'trust_legitimacy': qbr_data.get('trust_legitimacy', ''),
+            'competitors_paragraph': qbr_data.get('competitors_paragraph', ''),
+            'aeo_forum_content': qbr_data.get('aeo_forum_content', ''),
+            'aeo_why_forums': qbr_data.get('aeo_why_forums', ''),
+            'aeo_visibility_gap': qbr_data.get('aeo_visibility_gap', ''),
+            'findability_score': qbr_data.get('findability_score', '85'),
+            
+            # Visibility recommendations
+            'vis_rec_1': qbr_data.get('vis_rec_1', ''),
+            'vis_rec_2': qbr_data.get('vis_rec_2', ''),
+            'vis_rec_3': qbr_data.get('vis_rec_3', ''),
+            'vis_rec_4': qbr_data.get('vis_rec_4', ''),
+            'vis_rec_5': qbr_data.get('vis_rec_5', ''),
+            'vis_rec_6': qbr_data.get('vis_rec_6', ''),
+            'vis_rec_7': qbr_data.get('vis_rec_7', ''),
+            'vis_rec_8': qbr_data.get('vis_rec_8', ''),
+            
+            # Tables (placeholder for now)
+            'yoy_summary_table': qbr_data.get('yoy_summary_table', 'See Complete Report'),
+            'top_current_performers_table': qbr_data.get('top_current_performers_table', 'See Complete Report'),
+            'segment_overview_table': qbr_data.get('segment_overview_table', 'See Complete Report'),
+            'top_10_growth_table': qbr_data.get('top_10_growth_table', 'See Complete Report'),
+            'top_10_decline_table': qbr_data.get('top_10_decline_table', 'See Complete Report'),
+            'top_cited_domains_table': qbr_data.get('top_cited_domains_table', 'See Complete Report'),
+            'visibility_opportunities_table': qbr_data.get('visibility_opportunities_table', 'See Complete Report'),
+            
+            # Metrics for snapshot slide
+            'clicks_recent': qbr_data.get('Current Clicks', qbr_data.get('clicks_recent', 'See Complete Report')),
+            'clicks_yoy_pct': qbr_data.get('YoY Clicks Change', qbr_data.get('clicks_yoy_pct', 'See Complete Report')),
+            'sales_recent': qbr_data.get('Current Sales', qbr_data.get('sales_recent', 'See Complete Report')),
+            'sales_yoy_pct': qbr_data.get('YoY Sales Change', qbr_data.get('sales_yoy_pct', 'See Complete Report')),
+            'conv_rate_recent': qbr_data.get('Current Conv Rate', qbr_data.get('conv_rate_recent', 'See Complete Report')),
+            'conv_rate_yoy_pct': qbr_data.get('YoY Conv Rate Change', qbr_data.get('conv_rate_yoy_pct', 'See Complete Report')),
+            'order_value_recent': qbr_data.get('Current Order Value', qbr_data.get('order_value_recent', 'See Complete Report')),
+            'order_value_yoy_pct': qbr_data.get('YoY Order Value Change', qbr_data.get('order_value_yoy_pct', 'See Complete Report')),
+            'aov_recent': qbr_data.get('Current AOV', qbr_data.get('aov_recent', 'See Complete Report')),
+            'aov_yoy_pct': qbr_data.get('YoY AOV Change', qbr_data.get('aov_yoy_pct', 'See Complete Report')),
+            'pub_commission_recent': qbr_data.get('Current Commission', qbr_data.get('pub_commission_recent', 'See Complete Report')),
+            'pub_commission_yoy_pct': qbr_data.get('YoY Commission Change', qbr_data.get('pub_commission_yoy_pct', 'See Complete Report')),
+            'cpa_recent': qbr_data.get('Current CPA', qbr_data.get('cpa_recent', 'See Complete Report')),
+            'cpa_yoy_pct': qbr_data.get('YoY CPA Change', qbr_data.get('cpa_yoy_pct', 'See Complete Report')),
+            'roi_recent': qbr_data.get('Current ROI', qbr_data.get('roi_recent', 'See Complete Report')),
+            'roi_yoy_pct': qbr_data.get('YoY ROI Change', qbr_data.get('roi_yoy_pct', 'See Complete Report')),
         }
         
-        # NEW: Add default values for table placeholders (pointing to notes)
-        replacements.update({
-            "{{yoy_summary_table}}": "→ See detailed YoY summary table in presentation notes",
-            "{{top_10_growth_table}}": "→ See top 10 growth publishers in presentation notes",
-            "{{top_10_decline_table}}": "→ See top 10 declining publishers in presentation notes",
-            "{{top_current_performers_table}}": "→ See top current performers in presentation notes",
-            "{{search_visibility_table}}": "→ See visibility opportunities in presentation notes"
-        })
-        
-        # Automatically add ALL other fields from qbr_data as placeholders
-        # This handles all the AI-extracted fields like exec_point_1, insight_1, etc.
-        for key, value in qbr.items():
-            placeholder = f"{{{{{key}}}}}"
-            # Only add if not already in replacements (don't override manual mappings)
-            if placeholder not in replacements:
-                replacements[placeholder] = s(value)
-        
-        def replace_in_shape(shape):
-            if hasattr(shape, "text_frame"):
-                for paragraph in shape.text_frame.paragraphs:
-                    for run in paragraph.runs:
-                        for key, value in replacements.items():
-                            if key in run.text:
-                                run.text = run.text.replace(key, value)
-            
-            if hasattr(shape, "table"):
-                for row in shape.table.rows:
-                    for cell in row.cells:
-                        for key, value in replacements.items():
-                            if key in cell.text:
-                                cell.text = cell.text.replace(key, value)
-            
-            if hasattr(shape, "shapes"):
-                for sub_shape in shape.shapes:
-                    replace_in_shape(sub_shape)
-        
+        # Process all slides and shapes
         for slide in prs.slides:
             for shape in slide.shapes:
-                replace_in_shape(shape)
+                process_shape(shape, replacements)
         
-        notes_parts = []
-        if qbr.get("Complete QBR Report"):
-            notes_parts.append(f"=== Complete QBR Report ===\n{qbr['Complete QBR Report']}")
-        if qbr.get("Program Analysis (Full Text)"):
-            notes_parts.append(f"=== Program Analysis ===\n{qbr['Program Analysis (Full Text)']}")
-        if qbr.get("Publisher Analysis (Full Text)"):
-            notes_parts.append(f"=== Publisher Analysis ===\n{qbr['Publisher Analysis (Full Text)']}")
-        if qbr.get("Visibility Analysis (Full Text)"):
-            notes_parts.append(f"=== Visibility Analysis ===\n{qbr['Visibility Analysis (Full Text)']}")
-        
-        if notes_parts and len(prs.slides) > 0:
-            prs.slides[-1].notes_slide.notes_text_frame.text = "\n\n".join(notes_parts)
-        
-        output = BytesIO()
+        # Save to bytes
+        output = io.BytesIO()
         prs.save(output)
         output.seek(0)
-        result_b64 = base64.b64encode(output.read()).decode('utf-8')
+        
+        # Encode to base64
+        output_base64 = base64.b64encode(output.read()).decode('utf-8')
         
         return jsonify({
-            "success": True,
-            "binary": result_b64,
-            "filename": f"QBR-{s(qbr.get('clientName') or qbr.get('Client') or 'Client')}-{s(qbr.get('period') or qbr.get('Period') or 'Period')}.pptx"
+            'success': True,
+            'binary': output_base64
         })
         
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error processing PPTX: {error_trace}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'trace': error_trace
+        }), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'healthy'})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=5000)
